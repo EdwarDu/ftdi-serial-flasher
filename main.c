@@ -1,20 +1,53 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <ctype.h>
 #include "ftdi.h"
 #include <libusb.h>
 
 int main(int argc, char* argv[]) {
-    struct ftdi_context *ftdi = ftdi_new();
-    char* vid = argv[1];
-    char* pid = argv[2];
-    int vid_i = (int) strtol(vid, NULL, 0);
-    int pid_i = (int) strtol(pid, NULL, 0);
+    int opt;
+    struct ftdi_context *ftdi = NULL;
+    int vid_i = 0;
+    int pid_i = 0;
+    char *serial_number = NULL;
+    char *eeprom_load_filename = NULL;
+    char *eeprom_dump_filename = NULL;
 
-    char* serial_number = argc > 3 ? argv[3] : NULL;
+    while ((opt = getopt(argc, argv, "v:p:n:L:D:")) != -1){
+        switch(opt) {
+            case 'v':
+                vid_i = (int) strtol(optarg, NULL, 0);
+                break;
+            case 'p':
+                pid_i = (int) strtol(optarg, NULL, 0);
+                break;
+            case 'n':
+                serial_number = optarg;
+                break;
+            case 'L':
+                eeprom_load_filename = optarg;
+                break;
+            case 'D':
+                eeprom_dump_filename = optarg;
+                break;
+            default:
+                fprintf(stderr, "usage: %s [options]\n", *argv);
+                fprintf(stderr, "\t-v <hex number> Search for device with VID == number\n");
+                fprintf(stderr, "\t-p <hex number> Search for device with PID == number\n");
+                fprintf(stderr, "\t-n <string? New serial number (<= 8 char)\n");
+                fprintf(stderr, "\t-L <string? filename to load eeprom from, "
+                                "otherwise, eeprom from devcie with be used\n");
+                fprintf(stderr, "\t-D <string? filename to dump eeprom to\n");
+                return -1;
+        }
+    }
+
+
     unsigned char eeprom_buf[256];
 
+    ftdi = ftdi_new();
     if (ftdi == NULL){
         fprintf(stderr, "Failed to allocate ftdi structure: %s\n",
                 ftdi_get_error_string(ftdi));
@@ -28,7 +61,7 @@ int main(int argc, char* argv[]) {
     res = ftdi_usb_find_all(ftdi, &devlist, vid_i, pid_i);
     if (res < 0){
         ftdi_free(ftdi);
-        fprintf(stderr, "No device VID:%s, PID:%s found\n", vid, pid);
+        fprintf(stderr, "No device VID:%04X, PID:%04X found\n", vid_i, pid_i);
         return -1;
     }
     for (curdev = devlist; curdev != NULL; curdev = curdev->next, dev_i++){
@@ -118,6 +151,53 @@ int main(int argc, char* argv[]) {
                     eeprom_buf[eeprom_size-1],
                     eeprom_buf[eeprom_size-2]);
 
+            if (eeprom_dump_filename != NULL){
+                FILE* f_eeprom = fopen(eeprom_dump_filename, "wb");
+                if (f_eeprom == NULL){
+                    fprintf(stderr, "Failed to open EEPROM file %s to dump\n", eeprom_dump_filename);
+                }
+                else {
+                   res = fwrite(eeprom_buf, 1, eeprom_size, f_eeprom);
+                    if (res != eeprom_size) {
+                        fprintf(stderr, "Failed to dump to EEPROM file %s: read %d instead of %d\n",
+                                eeprom_dump_filename, res, eeprom_size);
+                    } else {
+                        fprintf(stderr, "EEPROM file %s dump ok\n", eeprom_dump_filename);
+                    }
+                    fclose(f_eeprom);
+                }
+            }
+
+            if (eeprom_load_filename != NULL){
+                FILE* f_eeprom = fopen(eeprom_load_filename, "rb");
+                if (f_eeprom == NULL){
+                    fprintf(stderr, "Failed to load EEPROM file %s\n", eeprom_load_filename);
+                }
+                else {
+                    long f_size = 0;
+                    fseek(f_eeprom, 0, SEEK_END);
+                    f_size = ftell(f_eeprom);
+                    if (f_size != eeprom_size) {
+                        fprintf(stderr, "EEPROM file %s size incorrect: %ld instead of %d\n",
+                                eeprom_load_filename, f_size, eeprom_size);
+                    }
+                    else {
+                        rewind(f_eeprom);
+                        unsigned char* temp_buf = (unsigned char*) malloc(eeprom_size);
+                        res = fread(temp_buf, 1, eeprom_size, f_eeprom);
+                        if (res != eeprom_size) {
+                            fprintf(stderr, "Failed to read from EEPROM file %s: read %d instead of %d\n",
+                                    eeprom_load_filename, res, eeprom_size);
+                        } else {
+                            memcpy(eeprom_buf, temp_buf, eeprom_size);
+                            fprintf(stderr, "EEPROM file %s loaded\n", eeprom_load_filename);
+                        }
+                        free(temp_buf);
+                    }
+                    fclose(f_eeprom);
+                }
+            }
+
             if (serial_number != NULL) {
                 int serial_number_len = strlen(serial_number);
                 serial_number_len = serial_number_len > 20 ? 20 : serial_number_len;
@@ -165,9 +245,9 @@ int main(int argc, char* argv[]) {
                 if ((res = ftdi_poll_modem_status(ftdi, &status)) != 0)
                     continue;
                 if ((res = ftdi_set_latency_timer(ftdi, 0x77)) != 0)
-                    return res;
+                    continue;
 
-                fprintf(stderr, "Starting to writ to EEPROM\n");
+                fprintf(stderr, "Starting to write to EEPROM\n");
 
                 for (i=0; i < eeprom_size/2 ;i++){
                     /* Do not try to write to reserved area */
@@ -181,14 +261,11 @@ int main(int argc, char* argv[]) {
                                                 SIO_WRITE_EEPROM_REQUEST, usb_val, i,
                                                 NULL, 0, ftdi->usb_write_timeout) < 0) {
                         fprintf(stderr, "Failed to write EEPROM\n");
-                        continue;
+                        break;
                     }
                 }
 
-                if (res != 0){
-                    fprintf(stderr, "Failed to write EEPROM: %s\n", ftdi_get_error_string(ftdi));
-                    continue;
-                }
+                fprintf(stderr, "Write to EEPROM OKAY\n");
             }
         }
         ftdi_usb_close(ftdi);
