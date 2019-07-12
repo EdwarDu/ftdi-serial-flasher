@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ftdi_tool C)
+project(ftdi_serial_flasher C)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -22,6 +22,6 @@ find_library(LIBUSB_1_LIBRARY
             /usr/local/lib)
 
 set(SOURCES main.c)
-add_executable(ftdi_tool ${SOURCES})
-target_include_directories(ftdi_tool PRIVATE ${LIBUSB_1_INCLUDE_DIR})
-target_link_libraries(ftdi_tool ${LIBUSB_1_LIBRARY} ftdi1)
+add_executable(ftdi_serial_flasher ${SOURCES})
+target_include_directories(ftdi_serial_flasher PRIVATE ${LIBUSB_1_INCLUDE_DIR})
+target_link_libraries(ftdi_serial_flasher ${LIBUSB_1_LIBRARY} ftdi1)
